@@ -1,5 +1,18 @@
+# Python 虚拟环境
 .venv/
+
+# Python 缓存
 __pycache__/
 *.pyc
+
+# 环境变量 / API Key
 .env
+
+# 本地知识库文件
 data/*.pdf
+
+# Chroma 向量数据库
+chroma_db/
+
+# 知识库 Hash 状态文件
+file_hashes.json

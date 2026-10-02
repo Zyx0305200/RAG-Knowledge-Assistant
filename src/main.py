@@ -2,7 +2,7 @@ from llm import generate_answer
 
 from rag import create_vector_store
 
-vector_store = create_vector_store("data/test.pdf")
+vector_store = create_vector_store("data")
 
 while True:
     question = input("\n请输入你的问题（输入 exit 退出）：")
