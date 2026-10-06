@@ -10,8 +10,12 @@ import shutil
 
 
 # =========================
-# 计算单个文件的 Hash
+# 项目配置
 # =========================
+
+EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
+
+
 def calculate_file_hash(file_path):
     with open(file_path, "rb") as file:
         file_content = file.read()
@@ -19,10 +23,6 @@ def calculate_file_hash(file_path):
     return hashlib.sha256(file_content).hexdigest()
 
 
-# =========================
-# 计算知识库文件的 Hash
-# 目前只监控 PDF 和 TXT
-# =========================
 def get_data_hashes(data_directory):
     file_hashes = {}
 
@@ -38,42 +38,53 @@ def get_data_hashes(data_directory):
     return file_hashes
 
 
-# =========================
-# 创建 / 加载向量数据库
-# =========================
 def create_vector_store(data_directory):
 
     persist_directory = "chroma_db"
-    hash_file = "file_hashes.json"
 
-    # 创建 Embedding 模型
+    # 原来的 file_hashes.json
+    # 现在不仅保存 Hash，还保存 Embedding 模型
+    state_file = "knowledge_base_state.json"
+
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        model_name=EMBEDDING_MODEL
     )
 
-    # -------------------------
-    # 1. 计算当前知识文件的 Hash
-    # -------------------------
-    current_hashes = get_data_hashes(data_directory)
+    # =========================
+    # 获取当前知识库状态
+    # =========================
 
-    # -------------------------
-    # 2. 读取上一次保存的 Hash
-    # -------------------------
-    if os.path.exists(hash_file):
-        with open(hash_file, "r", encoding="utf-8") as file:
-            old_hashes = json.load(file)
+    current_state = {
+        "embedding_model": EMBEDDING_MODEL,
+        "file_hashes": get_data_hashes(data_directory)
+    }
+
+    # =========================
+    # 读取上一次知识库状态
+    # =========================
+
+    if os.path.exists(state_file):
+        with open(
+            state_file,
+            "r",
+            encoding="utf-8"
+        ) as file:
+            old_state = json.load(file)
     else:
-        old_hashes = {}
+        old_state = {}
 
-    # -------------------------
-    # 3. 文件没有变化：
-    #    直接加载已有 Chroma
-    # -------------------------
+    # =========================
+    # 判断是否可以直接加载数据库
+    # =========================
+
     if (
-        current_hashes == old_hashes
+        current_state == old_state
         and os.path.exists(persist_directory)
     ):
-        print("知识库文件没有变化，直接加载已有 Chroma 数据库")
+        print(
+            "知识库状态没有变化，"
+            "直接加载已有 Chroma 数据库"
+        )
 
         vector_store = Chroma(
             collection_name="rag_knowledge_base",
@@ -83,25 +94,31 @@ def create_vector_store(data_directory):
 
         return vector_store
 
-    # -------------------------
-    # 4. 文件发生变化：
-    #    重新构建向量数据库
-    # -------------------------
-    print("检测到知识库发生变化，需要重新构建向量数据库")
+    # =========================
+    # 知识库发生变化
+    # =========================
+
+    print(
+        "检测到知识库文件或 Embedding 模型发生变化，"
+        "需要重新构建向量数据库"
+    )
 
     if os.path.exists(persist_directory):
         shutil.rmtree(persist_directory)
         print("旧的 Chroma 数据库已删除")
 
-    # -------------------------
-    # 5. 加载所有 PDF + TXT
-    # -------------------------
+    # =========================
+    # 加载知识文件
+    # =========================
+
     documents = []
 
     for filename in os.listdir(data_directory):
-        file_path = os.path.join(data_directory, filename)
+        file_path = os.path.join(
+            data_directory,
+            filename
+        )
 
-        # 加载 PDF
         if filename.lower().endswith(".pdf"):
             print("正在加载 PDF：", file_path)
 
@@ -110,7 +127,6 @@ def create_vector_store(data_directory):
 
             documents.extend(file_documents)
 
-        # 加载 TXT
         elif filename.lower().endswith(".txt"):
             print("正在加载 TXT：", file_path)
 
@@ -129,21 +145,23 @@ def create_vector_store(data_directory):
         "个 Document"
     )
 
-    # 没有找到支持的知识文件
     if len(documents) == 0:
         raise ValueError(
             "data 文件夹中没有找到 PDF 或 TXT 文件"
         )
 
-    # -------------------------
-    # 6. 文档切块
-    # -------------------------
+    # =========================
+    # 文档切块
+    # =========================
+
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
         chunk_overlap=100
     )
 
-    chunks = text_splitter.split_documents(documents)
+    chunks = text_splitter.split_documents(
+        documents
+    )
 
     print(
         "文档切块完成，共生成",
@@ -151,37 +169,36 @@ def create_vector_store(data_directory):
         "个 Chunk"
     )
 
-    # -------------------------
-    # 7. 创建新的 Chroma
-    # -------------------------
+    # =========================
+    # 创建 Chroma 数据库
+    # =========================
+
     vector_store = Chroma(
         collection_name="rag_knowledge_base",
         embedding_function=embeddings,
         persist_directory=persist_directory
     )
 
-    # -------------------------
-    # 8. Chunk 写入 Chroma
-    # -------------------------
     vector_store.add_documents(chunks)
 
     print("新的 Chroma 向量数据库构建完成")
 
-    # -------------------------
-    # 9. 构建成功后保存最新 Hash
-    # -------------------------
+    # =========================
+    # 保存当前知识库状态
+    # =========================
+
     with open(
-        hash_file,
+        state_file,
         "w",
         encoding="utf-8"
     ) as file:
         json.dump(
-            current_hashes,
+            current_state,
             file,
             ensure_ascii=False,
             indent=4
         )
 
-    print("新的文件 Hash 已保存")
+    print("新的知识库状态已保存")
 
     return vector_store
