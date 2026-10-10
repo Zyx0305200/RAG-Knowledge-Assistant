@@ -1,18 +1,43 @@
-# Python 虚拟环境
+
+# Python virtual environment
 .venv/
+venv/
 
-# Python 缓存
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
 
-# 环境变量 / API Key
+# Environment variables and API keys
 .env
+.env.*
+!.env.example
 
-# 本地知识库文件
+# Local knowledge base files
 data/*.pdf
 
-# Chroma 向量数据库
+# Chroma vector database
 chroma_db/
 
-# 知识库状态文件
+# Knowledge base state
 knowledge_base_state.json
+
+# Local evaluation annotations
+evaluation_annotations.json
+evaluation_annotations_backup.json
+evaluation_review_status.json
+evaluation_corpus_snapshot.json
+evaluation_results.json
+
+# Streamlit configuration and secrets
+.streamlit/secrets.toml
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

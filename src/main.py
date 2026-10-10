@@ -3,14 +3,23 @@ from llm import generate_answer
 
 
 # =========================
-# 1. 创建 / 加载知识库
+# 项目配置
 # =========================
+
+SCORE_THRESHOLD = 1.0
+
+
+# =========================
+# 创建 / 加载向量数据库
+# =========================
+
 vector_store = create_vector_store("data")
 
 
 # =========================
-# 2. 连续问答
+# 交互式问答
 # =========================
+
 while True:
 
     question = input(
@@ -22,99 +31,24 @@ while True:
         break
 
     # =========================
-    # 3. 检索相关文档
+    # 第一步：从 Chroma 检索 Top-3
     # =========================
+
     results = vector_store.similarity_search_with_score(
         question,
         k=3
     )
 
-    # =========================
-    # 4. 显示检索结果和分数
-    # =========================
-    print("\n===== 检索结果 =====")
+    print("\n===== 原始检索结果 =====")
 
     for i, (document, score) in enumerate(
         results,
         start=1
     ):
-        print(f"\n结果 {i}")
-        print(f"Score：{score:.4f}")
-        print(
-            "Source：",
-            document.metadata.get(
-                "source",
-                "未知来源"
-            )
-        )
-        print(
-            "Page：",
-            document.metadata.get(
-                "page",
-                "未知"
-            )
-        )
-
-        print(
-            "Content：",
-            document.page_content[:200]
-        )
-
-    # =========================
-    # 5. 提取 Document
-    # =========================
-    documents = [
-        document
-        for document, score in results
-    ]
-
-    # =========================
-    # 6. 构造 Context
-    # =========================
-    context = "\n\n".join(
-        document.page_content
-        for document in documents
-    )
-
-    # =========================
-    # 7. 构造 Prompt
-    # =========================
-    prompt = f"""
-请根据下面提供的参考资料回答问题。
-
-参考资料：
-{context}
-
-问题：
-{question}
-
-要求：
-1. 只根据参考资料回答。
-2. 如果参考资料中没有答案，请回答“根据现有资料无法回答”。
-3. 回答简洁、准确。
-"""
-
-    # =========================
-    # 8. 调用 Qwen
-    # =========================
-    answer = generate_answer(prompt)
-
-    # =========================
-    # 9. 输出最终答案
-    # =========================
-    print("\n===== 最终回答 =====")
-    print(answer)
-
-    # =========================
-    # 10. 输出来源
-    # =========================
-    print("\n===== 参考来源 =====")
-
-    for document in documents:
 
         source = document.metadata.get(
             "source",
-            "未知来源"
+            "未知"
         )
 
         page = document.metadata.get(
@@ -122,9 +56,107 @@ while True:
             "未知"
         )
 
-        if isinstance(page, int):
-            page = page + 1
-
+        print(f"\n结果 {i}")
+        print(f"Score：{score:.4f}")
+        print(f"Source：{source}")
+        print(f"Page：{page}")
         print(
-            f"- {source}，第 {page} 页"
+            "Content：",
+            document.page_content[:200]
         )
+
+    # =========================
+    # 第二步：Score 阈值过滤
+    # =========================
+
+    filtered_results = [
+        (document, score)
+        for document, score in results
+        if score < SCORE_THRESHOLD
+    ]
+
+    print(
+        f"\n通过 Score < {SCORE_THRESHOLD} "
+        f"过滤后剩余 {len(filtered_results)} 个结果"
+    )
+
+    # =========================
+    # 第三步：没有相关资料时直接拒答
+    # =========================
+
+    if len(filtered_results) == 0:
+        print("\n===== 最终回答 =====")
+        print("根据现有资料无法回答。")
+        continue
+
+    # =========================
+    # 第四步：提取过滤后的 Document
+    # =========================
+
+    documents = [
+        document
+        for document, score in filtered_results
+    ]
+
+    # =========================
+    # 第五步：构造 Context
+    # =========================
+
+    context = "\n\n".join(
+        document.page_content
+        for document in documents
+    )
+
+    # =========================
+    # 第六步：构造 Prompt
+    # =========================
+
+    prompt = f"""
+你是一个知识库问答助手。
+
+请严格根据下面提供的参考资料回答问题。
+
+如果参考资料中没有足够的信息回答问题，
+请回答“根据现有资料无法回答”。
+
+参考资料：
+{context}
+
+用户问题：
+{question}
+"""
+
+    # =========================
+    # 第七步：调用 Qwen
+    # =========================
+
+    answer = generate_answer(prompt)
+
+    print("\n===== 最终回答 =====")
+    print(answer)
+
+    # =========================
+    # 第八步：显示来源
+    # =========================
+
+    print("\n===== 参考来源 =====")
+
+    for document in documents:
+
+        source = document.metadata.get(
+            "source",
+            "未知"
+        )
+
+        page = document.metadata.get(
+            "page"
+        )
+
+        if isinstance(page, int):
+            print(
+                f"- {source}，第 {page + 1} 页"
+            )
+        else:
+            print(
+                f"- {source}"
+            )

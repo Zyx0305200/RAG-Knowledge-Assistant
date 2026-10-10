@@ -1,3 +1,4 @@
+
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -15,6 +16,13 @@ import shutil
 
 EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 100
+
+COLLECTION_NAME = "rag_knowledge_base"
+PERSIST_DIRECTORY = "chroma_db"
+STATE_FILE = "knowledge_base_state.json"
+
 
 def calculate_file_hash(file_path):
     with open(file_path, "rb") as file:
@@ -26,7 +34,7 @@ def calculate_file_hash(file_path):
 def get_data_hashes(data_directory):
     file_hashes = {}
 
-    for filename in os.listdir(data_directory):
+    for filename in sorted(os.listdir(data_directory)):
         file_path = os.path.join(data_directory, filename)
 
         if (
@@ -40,22 +48,14 @@ def get_data_hashes(data_directory):
 
 def create_vector_store(data_directory):
 
-    persist_directory = "chroma_db"
-
-    # 原来的 file_hashes.json
-    # 现在不仅保存 Hash，还保存 Embedding 模型
-    state_file = "knowledge_base_state.json"
-
-    embeddings = HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL
-    )
-
     # =========================
     # 获取当前知识库状态
     # =========================
 
     current_state = {
         "embedding_model": EMBEDDING_MODEL,
+        "chunk_size": CHUNK_SIZE,
+        "chunk_overlap": CHUNK_OVERLAP,
         "file_hashes": get_data_hashes(data_directory)
     }
 
@@ -63,9 +63,9 @@ def create_vector_store(data_directory):
     # 读取上一次知识库状态
     # =========================
 
-    if os.path.exists(state_file):
+    if os.path.exists(STATE_FILE):
         with open(
-            state_file,
+            STATE_FILE,
             "r",
             encoding="utf-8"
         ) as file:
@@ -77,35 +77,65 @@ def create_vector_store(data_directory):
     # 判断是否可以直接加载数据库
     # =========================
 
+    database_exists = (
+        os.path.isdir(PERSIST_DIRECTORY)
+        and os.path.exists(
+            os.path.join(PERSIST_DIRECTORY, "chroma.sqlite3")
+        )
+    )
+
+    # 兼容旧版状态文件：
+    # 旧版没有保存切块参数，但实际使用的是 500 / 100。
+    # 当配置仍为旧版默认值时，不必因此重建数据库。
+
     if (
-        current_state == old_state
-        and os.path.exists(persist_directory)
+        "chunk_size" not in old_state
+        and "chunk_overlap" not in old_state
+        and old_state.get("embedding_model") == EMBEDDING_MODEL
+        and old_state.get("file_hashes") == current_state["file_hashes"]
+        and CHUNK_SIZE == 500
+        and CHUNK_OVERLAP == 100
     ):
+        old_state = current_state.copy()
+
+        with open(
+            STATE_FILE,
+            "w",
+            encoding="utf-8"
+        ) as file:
+            json.dump(
+                old_state,
+                file,
+                ensure_ascii=False,
+                indent=4
+            )
+
+        print("已升级旧版知识库状态文件")
+
+    embeddings = HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL
+    )
+
+    if current_state == old_state and database_exists:
         print(
             "知识库状态没有变化，"
             "直接加载已有 Chroma 数据库"
         )
 
-        vector_store = Chroma(
-            collection_name="rag_knowledge_base",
+        return Chroma(
+            collection_name=COLLECTION_NAME,
             embedding_function=embeddings,
-            persist_directory=persist_directory
+            persist_directory=PERSIST_DIRECTORY
         )
 
-        return vector_store
-
     # =========================
-    # 知识库发生变化
+    # 知识库配置或文件发生变化
     # =========================
 
     print(
-        "检测到知识库文件或 Embedding 模型发生变化，"
-        "需要重新构建向量数据库"
+        "检测到知识库文件、Embedding 模型"
+        "或切块参数发生变化，需要重新构建数据库"
     )
-
-    if os.path.exists(persist_directory):
-        shutil.rmtree(persist_directory)
-        print("旧的 Chroma 数据库已删除")
 
     # =========================
     # 加载知识文件
@@ -113,11 +143,14 @@ def create_vector_store(data_directory):
 
     documents = []
 
-    for filename in os.listdir(data_directory):
+    for filename in sorted(os.listdir(data_directory)):
         file_path = os.path.join(
             data_directory,
             filename
         )
+
+        if not os.path.isfile(file_path):
+            continue
 
         if filename.lower().endswith(".pdf"):
             print("正在加载 PDF：", file_path)
@@ -155,13 +188,11 @@ def create_vector_store(data_directory):
     # =========================
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=100
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP
     )
 
-    chunks = text_splitter.split_documents(
-        documents
-    )
+    chunks = text_splitter.split_documents(documents)
 
     print(
         "文档切块完成，共生成",
@@ -170,13 +201,17 @@ def create_vector_store(data_directory):
     )
 
     # =========================
-    # 创建 Chroma 数据库
+    # 重建 Chroma 数据库
     # =========================
 
+    if os.path.exists(PERSIST_DIRECTORY):
+        shutil.rmtree(PERSIST_DIRECTORY)
+        print("旧的 Chroma 数据库已删除")
+
     vector_store = Chroma(
-        collection_name="rag_knowledge_base",
+        collection_name=COLLECTION_NAME,
         embedding_function=embeddings,
-        persist_directory=persist_directory
+        persist_directory=PERSIST_DIRECTORY
     )
 
     vector_store.add_documents(chunks)
@@ -188,7 +223,7 @@ def create_vector_store(data_directory):
     # =========================
 
     with open(
-        state_file,
+        STATE_FILE,
         "w",
         encoding="utf-8"
     ) as file:
